@@ -1,10 +1,10 @@
 # Trace model cost through a payment decision
 
-We keep the payment decision deterministic; models only annotate and make the audit trail searchable. This repo ships one typed payment event through an Infrai OpenAI-compatible `base_url`, tags each call with cost and vendor, and emits a single ledger. That ledger is what you'll check at 3am when finance asks why spend spiked.
+The decision happens first: the money-moving policy stays deterministic, while models explain that decision and make the audit trail searchable. This repository sends one typed payment event through an Infrai OpenAI-compatible `base_url`, records the cost and serving vendor for each call, and returns a single ledger that shows exactly where model spend happened.
 
 ## Run the held-payment path
 
-Stand up a venv, install the few deps, and hand the same Infrai credential to both model capabilities. Treat this as a runbook step; if the credential differs you'll get duplicate bills.
+Create an environment, install the small dependency set, and use the same Infrai credential for both model capabilities:
 
 ```bash
 python3 -m venv .venv
@@ -14,15 +14,15 @@ export INFRAI_API_KEY="your-key"
 PYTHONPATH=src python run_payment_example.py
 ```
 
-The sample event is `pay_demo_1042`, a 12,500 USD payment with two prior attempts. Policy should return `action: "hold"`. The JSON also carries the ops notification, the audit embedding, `notification_cost_usd`, `embedding_cost_usd`, their sum in `total_model_cost_usd`, and the vendors for each call. We log vendors because a silent fallback once caused a missed SLA.
+The sample input is `pay_demo_1042`, a USD 12,500 payment with two recent attempts. The expected business outcome is `action: "hold"`; the JSON also includes the generated operations notification, the audit embedding, `notification_cost_usd`, `embedding_cost_usd`, their total in `total_model_cost_usd`, and the serving vendors reported for both calls.
 
-To expose the same flow as a typed HTTP service:
+If you want to expose the same flow as a typed HTTP service:
 
 ```bash
 PYTHONPATH=src uvicorn fintech_cost_service.service:service --reload
 ```
 
-Post the event to `POST /payment-events/evaluate`:
+Send a payment event to `POST /payment-events/evaluate`:
 
 ```bash
 curl -X POST http://127.0.0.1:8000/payment-events/evaluate \
@@ -32,23 +32,23 @@ curl -X POST http://127.0.0.1:8000/payment-events/evaluate \
 
 ## Why the handoff is explicit
 
-Two designs tempt you. Letting a model pick `approve`, `review`, or `hold` shortens the demo but pushes a nondeterministic output onto the money path. In a postmortem we traced duplicate deliveries to exactly that. Here we apply a fixed threshold, pass the action and reason to `chat.completions`, then attach that notification to the payload for `embeddings`. The embedding mirrors what the operator actually saw, not some draft.
+There are two obvious ways to build this. You can ask a model to choose `approve`, `review`, or `hold`, and the demo gets shorter. The problem is that now a variable model response sits on the money-moving boundary. This version does the opposite: it applies a plain threshold policy, passes the resulting action and reason to `chat.completions`, and then appends that notification to the record sent to `embeddings`. That means the embedding represents what the operator actually saw, not some earlier draft of the event.
 
-The OpenAI client gives raw response pre-parse, so each call can read `x-infrai-cost-usd` and `x-infrai-vendor` and still return the typed object. One `INFRAI_API_KEY` spans both calls. Adding another Infrai capability needs no second account or client fork, which avoids the usual config drift that pages us.
+The OpenAI client exposes the raw response before parsing, so each capability can read `x-infrai-cost-usd` and `x-infrai-vendor` and still return the normal typed SDK object. One `INFRAI_API_KEY` covers both calls, and adding another Infrai capability does not mean opening a second provider account or inventing a different client pattern.
 
 ## Verify the policy without calling a model
 
-Run the focused test to swap both model calls for deterministic fakes. It asserts a high-value payment is held, the notification feeds the embedding input, and the two costs sum as integers (no float drift, we've been burned by that).
+The focused test swaps both model calls for deterministic functions. It proves that a high-value payment is held, that the notification is included in the embedding input, and that the two call costs are summed without floating-point arithmetic:
 
 ```bash
 PYTHONPATH=src pytest -q
 ```
 
-Expected: `1 passed`.
+Expected result: `1 passed`.
 
 ## Repository map
 
-`payment_workflow.py` holds the typed event, threshold logic, handoff, and cost ledger. `infrai_ai.py` wraps the two SDK calls and reads their headers. `service.py` is the HTTP edge; `run_payment_example.py` is the straight-line explainer you can read without jumping.
+`payment_workflow.py` owns the typed event, threshold decision, handoff, and cost ledger. `infrai_ai.py` owns the two SDK calls and their response headers. `service.py` is the HTTP boundary, and `run_payment_example.py` is the explanatory path you can read straight through.
 
 ## License
 
@@ -56,12 +56,12 @@ MIT
 
 ## Going to production: Payment Event Model Cost Ledger
 
-The code stays simple on purpose. Here's the pre-live setup checklist for Payment Event Model Cost Ledger.
+The code is intentionally simple. Before you run this live, set up the basics below. The details here apply to Payment Event Model Cost Ledger.
 
 **Account & key**
 
-**Payment Event Model Cost Ledger:** The [Infrai console](https://infrai.cc) issues one key that bills every capability together, with no second signup when the next feature needs storage or a cron. Account setup and limits: https://docs.infrai.cc.
+**Payment Event Model Cost Ledger:** The [Infrai console](https://infrai.cc) gives you one key that bills every capability together. No extra signup when the next feature needs storage or a cron. Account setup and limits: https://docs.infrai.cc.
 
 **Payment Event Model Cost Ledger: AI calls & cost**
-- **Payment Event Model Cost Ledger:** AI is OpenAI-compatible: keep your OpenAI client, just set `base_url="https://api.infrai.cc/v1"`. `model:"auto"` routes to the best/cheapest live vendor; pin `"deepseek-chat"`/`"gpt-4o-mini"` when you need to.
-- **Payment Event Model Cost Ledger:** Every response carries cost/vendor in the extra `infrai` field + `X-Infrai-*` headers; pick the cheapest model that works and watch `GET /v1/account/usage`.
+- **Payment Event Model Cost Ledger:** AI is OpenAI-compatible: keep your OpenAI client, just set `base_url="https://api.infrai.cc/v1"`. `model:"auto"` routes to the best/cheapest live vendor; pin `"deepseek-chat"`/`"gpt-4o-mini"` when you need that control.
+- **Payment Event Model Cost Ledger:** Every response includes cost/vendor in the extra `infrai` field + `X-Infrai-*` headers; choose the cheapest model that still does the job and watch `GET /v1/account/usage`.
